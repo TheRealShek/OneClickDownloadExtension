@@ -4,8 +4,21 @@ function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function hasDeclarativeNetRequest() {
+  return Boolean(
+    chrome.declarativeNetRequest &&
+      chrome.declarativeNetRequest.getSessionRules &&
+      chrome.declarativeNetRequest.updateSessionRules
+  );
+}
+
 function getNextRuleId(callback) {
   chrome.declarativeNetRequest.getSessionRules(function (rules) {
+    if (chrome.runtime.lastError) {
+      callback(null);
+      return;
+    }
+
     var ids = (rules || []).map(function (rule) {
       return rule.id;
     });
@@ -52,14 +65,19 @@ function buildRefererRule(ruleId, imageUrl, pageUrl) {
       ]
     },
     condition: {
-      regexFilter: escapeRegex(imageUrl),
+      regexFilter: "^" + escapeRegex(imageUrl) + "$",
       resourceTypes: ["image", "other", "xmlhttprequest"]
     }
   };
 }
 
-function addRefererRule(imageUrl, pageUrl, callback) {
+function addDeclarativeRefererRule(imageUrl, pageUrl, callback) {
   getNextRuleId(function (ruleId) {
+    if (!ruleId) {
+      callback(null);
+      return;
+    }
+
     var rule = buildRefererRule(ruleId, imageUrl, pageUrl);
 
     chrome.declarativeNetRequest.updateSessionRules(
@@ -72,47 +90,133 @@ function addRefererRule(imageUrl, pageUrl, callback) {
           callback(null);
           return;
         }
-        callback(ruleId);
+        callback(function () {
+          chrome.declarativeNetRequest.updateSessionRules({
+            addRules: [],
+            removeRuleIds: [ruleId]
+          });
+        });
       }
     );
   });
 }
 
-function removeRefererRule(ruleId) {
-  if (!ruleId) {
+function addWebRequestRefererRule(imageUrl, pageUrl, callback) {
+  if (!chrome.webRequest || !chrome.webRequest.onBeforeSendHeaders) {
+    callback(null);
     return;
   }
 
-  chrome.declarativeNetRequest.updateSessionRules({
-    addRules: [],
-    removeRuleIds: [ruleId]
+  function setReferer(details) {
+    if (!details || details.url !== imageUrl) {
+      return;
+    }
+
+    var headers = details.requestHeaders || [];
+    var found = false;
+
+    headers.forEach(function (header) {
+      if (header.name && header.name.toLowerCase() === "referer") {
+        header.value = pageUrl;
+        found = true;
+      }
+    });
+
+    if (!found) {
+      headers.push({
+        name: "Referer",
+        value: pageUrl
+      });
+    }
+
+    return { requestHeaders: headers };
+  }
+
+  try {
+    chrome.webRequest.onBeforeSendHeaders.addListener(
+      setReferer,
+      { urls: ["<all_urls>"] },
+      ["blocking", "requestHeaders"]
+    );
+  } catch (err) {
+    callback(null);
+    return;
+  }
+
+  callback(function () {
+    chrome.webRequest.onBeforeSendHeaders.removeListener(setReferer);
   });
 }
 
-function cleanupOnDownloadStart(imageUrl, ruleId) {
+function addRefererRule(imageUrl, pageUrl, callback) {
+  if (!pageUrl) {
+    callback(function () {});
+    return;
+  }
+
+  if (hasDeclarativeNetRequest()) {
+    addDeclarativeRefererRule(imageUrl, pageUrl, function (cleanupRefererRule) {
+      if (cleanupRefererRule) {
+        callback(cleanupRefererRule);
+        return;
+      }
+
+      addWebRequestRefererRule(imageUrl, pageUrl, function (fallbackCleanup) {
+        callback(fallbackCleanup || function () {});
+      });
+    });
+    return;
+  }
+
+  addWebRequestRefererRule(imageUrl, pageUrl, function (cleanupRefererRule) {
+    callback(cleanupRefererRule || function () {});
+  });
+}
+
+function cleanupWhenDownloadEnds(downloadId, cleanupRefererRule) {
   var timeoutId = null;
+  var cleanedUp = false;
 
   function done() {
+    if (cleanedUp) {
+      return;
+    }
+
+    cleanedUp = true;
     if (timeoutId !== null) {
       clearTimeout(timeoutId);
       timeoutId = null;
     }
-    chrome.downloads.onCreated.removeListener(onCreated);
-    removeRefererRule(ruleId);
+    chrome.downloads.onChanged.removeListener(onChanged);
+    cleanupRefererRule();
   }
 
-  function onCreated(item) {
-    if (item && item.url === imageUrl) {
+  function onChanged(delta) {
+    if (
+      delta &&
+      delta.id === downloadId &&
+      delta.state &&
+      (delta.state.current === "complete" || delta.state.current === "interrupted")
+    ) {
       done();
     }
   }
 
-  chrome.downloads.onCreated.addListener(onCreated);
-  timeoutId = setTimeout(done, 5000);
+  chrome.downloads.onChanged.addListener(onChanged);
+  chrome.downloads.search({ id: downloadId }, function (items) {
+    if (chrome.runtime.lastError || !items || !items[0]) {
+      return;
+    }
+
+    if (items[0].state === "complete" || items[0].state === "interrupted") {
+      done();
+    }
+  });
+  timeoutId = setTimeout(done, 10 * 60 * 1000);
 }
 
 chrome.browserAction.onClicked.addListener(function (tab) {
-  if (!tab || !tab.id) {
+  if (!tab || typeof tab.id !== "number") {
     return;
   }
   chrome.tabs.sendMessage(tab.id, { type: "scan-largest-image" }, function () {
@@ -134,12 +238,18 @@ chrome.runtime.onMessage.addListener(function (message, sender) {
     return;
   }
 
-  addRefererRule(imageUrl, pageUrl, function (ruleId) {
-    cleanupOnDownloadStart(imageUrl, ruleId);
-
+  addRefererRule(imageUrl, pageUrl, function (cleanupRefererRule) {
     chrome.downloads.download({
       url: imageUrl,
-      filename: inferFilename(imageUrl)
+      filename: inferFilename(imageUrl),
+      conflictAction: "uniquify"
+    }, function (downloadId) {
+      if (chrome.runtime.lastError || typeof downloadId !== "number") {
+        cleanupRefererRule();
+        return;
+      }
+
+      cleanupWhenDownloadEnds(downloadId, cleanupRefererRule);
     });
   });
 });

@@ -1,12 +1,15 @@
 {
   "manifest_version": 2,
   "name": "One Click Image Download",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Download the largest image on the current page with one click.",
 
   "permissions": [
     "activeTab",
     "downloads",
+    "declarativeNetRequest",
+    "webRequest",
+    "webRequestBlocking",
     "<all_urls>"
   ],
 
