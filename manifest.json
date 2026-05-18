@@ -1,0 +1,42 @@
+{
+  "manifest_version": 2,
+  "name": "One Click Image Download",
+  "version": "1.0.0",
+  "description": "Download the largest image on the current page with one click.",
+
+  "permissions": [
+    "activeTab",
+    "downloads",
+    "<all_urls>"
+  ],
+
+  "background": {
+    "scripts": ["background.js"]
+  },
+
+  "browser_action": {
+    "default_title": "Download largest image"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "one-click-image-download-v2@abhishek",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": ["none"],
+        "optional": []
+      }
+    },
+    "gecko_android": {
+      "strict_min_version": "142.0"
+    }
+  }
+}
