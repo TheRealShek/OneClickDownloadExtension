@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "One Click Image Download",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Download the largest image on the current page with one click.",
 
   "permissions": [
@@ -17,8 +17,17 @@
     "scripts": ["background.js"]
   },
 
+  "icons": {
+    "48": "icons/icon-48.png",
+    "96": "icons/icon-96.png"
+  },
+
   "browser_action": {
-    "default_title": "Download largest image"
+    "default_title": "Download largest image",
+    "default_icon": {
+      "32": "icons/icon-32.png",
+      "64": "icons/icon-64.png"
+    }
   },
 
   "content_scripts": [
